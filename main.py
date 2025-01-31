@@ -7,10 +7,10 @@ from fastapi import FastAPI, HTTPException
 from aiogram import Bot, Dispatcher, Router, types
 import asyncio
 
-# 🔹 Настройки
-BOT_TOKEN = BOT_TOKEN
-DB_URL = DB_URL
-DB_TOKEN = DB_TOKEN
+# 🔹 Загружаем переменные из окружения (Railway Variables)
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+DB_URL = os.getenv("DB_URL")
+DB_TOKEN = os.getenv("DB_TOKEN")
 
 # 🔹 Инициализация FastAPI
 app = FastAPI()
