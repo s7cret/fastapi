@@ -1,3 +1,4 @@
+import os  # Импортируем модуль для работы с окружением
 import hmac
 import hashlib
 import json
@@ -7,9 +8,9 @@ from aiogram import Bot, Dispatcher, Router, types
 import asyncio
 
 # 🔹 Настройки
-BOT_TOKEN = "7537643325:AAFh38eDVxuEkeor4T57tLKPuoD57ixuQ9o"
-DB_URL = "libsql://miniappbd-s7cret.turso.io"
-DB_TOKEN = "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhIjoicnciLCJleHAiOjE3Njk2OTk4MzYsImlhdCI6MTczODE2MzgzNiwiaWQiOiI5M2ViYmJlOC00MWY3LTQ3MzgtOTE1Ni0xNTE0YTY5NThmNjgifQ.wDq-Xd0888uQc6T9JL4XtlGbOrMhpUH2i4OSZYbhQrIN0fejsmHwMVozR5eFp0l-R2Zpx_TOrMy1A5sg9lbjBA"
+BOT_TOKEN = BOT_TOKEN
+DB_URL = DB_URL
+DB_TOKEN = DB_TOKEN
 
 # 🔹 Инициализация FastAPI
 app = FastAPI()
