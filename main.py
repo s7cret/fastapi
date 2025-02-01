@@ -223,8 +223,11 @@ async def main():
     # Запускаем бота
     bot_task = loop.create_task(dp.start_polling(bot))
     # Запускаем FastAPI сервер
-    server_task = loop.create_task(uvicorn.run(app, host="0.0.0.0", port=8000))
     await asyncio.gather(sync_task, bot_task, server_task)
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+
+
+
