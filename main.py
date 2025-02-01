@@ -87,51 +87,51 @@ def check_webapp_signature(token: str, init_data: str) -> bool:
 # Функция синхронизации локальной и удалённой баз данных
 async def sync_databases():
     """
-    Каждые 10 минут синхронизирует данные из локальной БД с удалённой.
-    Для каждого пользователя обновляем удалённую БД (если запись есть, обновляем clicks,
-    иначе вставляем новую запись), затем считываем статистику из удалённой БД и обновляем локальную.
+    Каждые 10 минут:
+      - Считывает топ-100 пользователей (по кликам) из локальной БД.
+      - Для каждого пользователя суммирует локальные клики с кликами в удалённой БД.
+      - Очищает записи для обработанных пользователей из локальной БД.
     """
     while True:
         try:
             print("🔄 [Sync] Начало синхронизации локальной и удалённой БД")
-            # Получаем все данные из локальной БД
-            local_cursor.execute("SELECT * FROM local_clicks")
+            # Считываем топ-100 пользователей по кликам из локальной БД
+            local_cursor.execute("SELECT * FROM local_clicks ORDER BY clicks DESC LIMIT 100")
             local_rows = local_cursor.fetchall()
-            # Для каждого пользователя: синхронизируем удалённую БД
-            for row in local_rows:
-                user_id = row["user_id"]
-                username = row["username"]
-                clicks = row["clicks"]
-                # Проверяем, есть ли такой пользователь в удалённой БД
-                result = remote_conn.execute("SELECT clicks FROM clicks WHERE user_id = ?", (user_id,))
-                remote_row = result.fetchone()
-                if remote_row:
-                    # Обновляем значение кликов в удалённой БД (можно суммировать, если нужно)
-                    remote_conn.execute("UPDATE clicks SET clicks = ? WHERE user_id = ?", (clicks, user_id))
-                else:
-                    # Если записи нет, вставляем новую
-                    remote_conn.execute("INSERT INTO clicks (user_id, username, clicks) VALUES (?, ?, ?)",
-                                          (user_id, username, clicks))
-            remote_conn.commit()
+            if not local_rows:
+                print("🔄 [Sync] Нет данных для синхронизации")
+            else:
+                for row in local_rows:
+                    user_id = row["user_id"]
+                    username = row["username"]
+                    local_clicks = row["clicks"]
 
-            # После обновления удалённой БД считываем актуальные данные
-            result = remote_conn.execute("SELECT * FROM clicks")
-            remote_rows = result.fetchall()
-            # Обновляем локальную БД на основе данных из удалённой БД
-            for row in remote_rows:
-                user_id = row[0]
-                username = row[1]
-                clicks = row[2]
-                local_cursor.execute("""
-                    INSERT INTO local_clicks (user_id, username, clicks)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(user_id) DO UPDATE SET clicks = excluded.clicks
-                """, (user_id, username, clicks))
-            local_conn.commit()
-            print("✅ [Sync] Синхронизация завершена")
+                    # Считываем данные из удалённой БД для данного пользователя
+                    result = remote_conn.execute("SELECT clicks FROM clicks WHERE user_id = ?", (user_id,))
+                    remote_row = result.fetchone()
+                    if remote_row:
+                        # Прибавляем локальные клики к удалённым
+                        new_clicks = remote_row[0] + local_clicks
+                        remote_conn.execute("UPDATE clicks SET clicks = ? WHERE user_id = ?", (new_clicks, user_id))
+                    else:
+                        # Если записи в удалённой БД нет, вставляем новую запись
+                        remote_conn.execute(
+                            "INSERT INTO clicks (user_id, username, clicks) VALUES (?, ?, ?)",
+                            (user_id, username, local_clicks)
+                        )
+                remote_conn.commit()
+
+                # После обновления удалённой БД удаляем обработанные записи из локальной БД
+                user_ids = [row["user_id"] for row in local_rows]
+                # Используем параметризованный запрос для удаления записей
+                placeholders = ",".join("?" for _ in user_ids)
+                local_cursor.execute(f"DELETE FROM local_clicks WHERE user_id IN ({placeholders})", user_ids)
+                local_conn.commit()
+
+                print("✅ [Sync] Синхронизация завершена для", len(user_ids), "пользователей")
         except Exception as e:
             print("❌ [Sync] Ошибка синхронизации:", e)
-        # Ждём 10 минут (600 секунд)
+        # Ждем 10 минут (600 секунд)
         await asyncio.sleep(600)
 
 # Endpoint авторизации
