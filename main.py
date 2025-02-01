@@ -39,9 +39,16 @@ conn.commit()
 def check_telegram_auth(data):
     print("🔹 [Auth] Полученные данные:", data)  # Логируем запрос
 
+    # Если поле "user" представлено как dict, пере-сериализуем его в строку
+    if "user" in data and isinstance(data["user"], dict):
+        # Используем json.dumps с минимальными разделителями и сортировкой ключей,
+        # чтобы получить строку вида: {"id":242026213,"first_name":"S7cret",...}
+        data["user"] = json.dumps(data["user"], separators=(",", ":"), sort_keys=True)
+
     secret_key = hashlib.sha256(BOT_TOKEN.encode()).digest()
     received_hash = data.pop("hash", None)
 
+    # Собираем строку для проверки, сортируя ключи
     check_string = "\n".join(f"{k}={v}" for k, v in sorted(data.items()))
     calculated_hash = hmac.new(secret_key, check_string.encode(), hashlib.sha256).hexdigest()
 
