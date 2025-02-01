@@ -38,15 +38,16 @@ conn.execute("""
 """)
 conn.commit()
 
-# Функция проверки подписи согласно рекомендациям Telegram:
+# Функция проверки подписи согласно рекомендациям Telegram WebApp:
 def check_webapp_signature(token: str, init_data: str) -> bool:
     """
     Проверяет подпись initData, переданного от Telegram WebApp.
-    
+
     Алгоритм:
       1. Разбираем init_data как query string.
       2. Удаляем параметр "hash".
-      3. Формируем строку вида: "key1=value1\nkey2=value2\n..." (ключи сортируются лексикографически).
+      3. Формируем строку вида: "key1=value1\nkey2=value2\n..." 
+         (ключи сортируются лексикографически).
       4. Вычисляем секретный ключ как HMAC с ключом "WebAppData" и токеном бота.
       5. Вычисляем контрольный хэш.
       6. Сравниваем вычисленный хэш с полученным.
@@ -107,7 +108,8 @@ async def auth(data: dict):
     user_clicks = user[0] if user else 0
     
     if not user:
-        conn.execute("INSERT INTO clicks (user_id, username, clicks) VALUES (?, ?, ?)", (user_id, username, 0))
+        conn.execute("INSERT INTO clicks (user_id, username, clicks) VALUES (?, ?, ?)",
+                     (user_id, username, 0))
         conn.commit()
     
     print(f"✅ [API] Пользователь {user_id} ({username}), кликов: {user_clicks}")
