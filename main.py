@@ -26,7 +26,7 @@ dp = Dispatcher()
 router = Router()
 dp.include_router(router)
 
-# 4. Подключение к удалённой базе (Turso) через libsql
+# 4. Подключение к удалённой базе (например, Turso) через libsql
 remote_conn = libsql.connect("miniappbd", sync_url=DB_URL, auth_token=DB_TOKEN)
 remote_conn.sync()  # Принудительная синхронизация перед SQL-запросами
 
@@ -84,13 +84,15 @@ def check_webapp_signature(token: str, init_data: str) -> bool:
     ).hexdigest()
     return calculated_hash == received_hash
 
-# Функция синхронизации локальной и удалённой баз данных
+# Фоновая задача для синхронизации локальной и удалённой баз данных
 async def sync_databases():
     """
     Каждые 10 минут:
-      - Считывает топ-100 пользователей (по кликам) из локальной БД.
-      - Для каждого пользователя суммирует локальные клики с кликами в удалённой БД.
-      - Очищает записи для обработанных пользователей из локальной БД.
+      1. Считывает из локальной БД топ-100 пользователей (по кликам).
+      2. Для каждого пользователя обновляет (или вставляет) запись в удалённой БД,
+         суммируя локальные клики с удалёнными.
+      3. После успешной синхронизации удаляет обработанные записи из локальной БД.
+      4. Затем считывает актуальные данные из удалённой БД и обновляет локальную БД (UPSERT).
     """
     while True:
         try:
@@ -110,33 +112,41 @@ async def sync_databases():
                     result = remote_conn.execute("SELECT clicks FROM clicks WHERE user_id = ?", (user_id,))
                     remote_row = result.fetchone()
                     if remote_row:
-                        # Прибавляем локальные клики к удалённым
+                        # Суммируем локальные клики с удалёнными
                         new_clicks = remote_row[0] + local_clicks
                         remote_conn.execute("UPDATE clicks SET clicks = ? WHERE user_id = ?", (new_clicks, user_id))
                     else:
-                        # Если записи в удалённой БД нет, вставляем новую запись
-                        remote_conn.execute(
-                            "INSERT INTO clicks (user_id, username, clicks) VALUES (?, ?, ?)",
-                            (user_id, username, local_clicks)
-                        )
+                        remote_conn.execute("INSERT INTO clicks (user_id, username, clicks) VALUES (?, ?, ?)",
+                                             (user_id, username, local_clicks))
                 remote_conn.commit()
 
-                # После обновления удалённой БД удаляем обработанные записи из локальной БД
+                # Удаляем обработанные записи из локальной БД
                 user_ids = [row["user_id"] for row in local_rows]
-                # Используем параметризованный запрос для удаления записей
                 placeholders = ",".join("?" for _ in user_ids)
                 local_cursor.execute(f"DELETE FROM local_clicks WHERE user_id IN ({placeholders})", user_ids)
                 local_conn.commit()
 
+                # После обновления, считываем актуальные данные из удалённой БД
+                result = remote_conn.execute("SELECT * FROM clicks")
+                remote_rows = result.fetchall()
+                for row in remote_rows:
+                    user_id = row[0]
+                    username = row[1]
+                    clicks = row[2]
+                    local_cursor.execute("""
+                        INSERT INTO local_clicks (user_id, username, clicks)
+                        VALUES (?, ?, ?)
+                        ON CONFLICT(user_id) DO UPDATE SET clicks = excluded.clicks
+                    """, (user_id, username, clicks))
+                local_conn.commit()
                 print("✅ [Sync] Синхронизация завершена для", len(user_ids), "пользователей")
         except Exception as e:
             print("❌ [Sync] Ошибка синхронизации:", e)
-        # Ждем 10 минут (600 секунд)
-        await asyncio.sleep(600)
+        await asyncio.sleep(600)  # 10 минут
 
 # Endpoint авторизации
 @app.post("/api/auth")
-async def auth(data: dict):
+async def auth_endpoint(data: dict):
     """
     Ожидает, что клиент пришлёт JSON с полем "initData",
     содержащим исходную строку данных от Telegram.
@@ -147,7 +157,6 @@ async def auth(data: dict):
         raise HTTPException(status_code=400, detail="Missing initData")
     if not check_webapp_signature(BOT_TOKEN, init_data):
         raise HTTPException(status_code=403, detail="Invalid auth")
-    # Разбираем initData
     parsed_data = dict(parse_qsl(init_data))
     user_json = parsed_data.get("user")
     if not user_json:
@@ -165,7 +174,6 @@ async def auth(data: dict):
     if row:
         user_clicks = row["clicks"]
     else:
-        # Если записи нет, вставляем новую с 0 кликов
         local_cursor.execute("INSERT INTO local_clicks (user_id, username, clicks) VALUES (?, ?, ?)",
                              (user_id, username, 0))
         local_conn.commit()
@@ -178,10 +186,8 @@ async def auth(data: dict):
 async def record_click(data: dict):
     user_id = data["user_id"]
     print(f"🔹 [API] Получен клик от {user_id}")
-    # Обновляем локальную БД
     local_cursor.execute("UPDATE local_clicks SET clicks = clicks + 1 WHERE user_id = ?", (user_id,))
     if local_cursor.rowcount == 0:
-        # Если записи нет, вставляем новую (хотя теоретически запись должна уже быть)
         local_cursor.execute("INSERT INTO local_clicks (user_id, username, clicks) VALUES (?, ?, ?)",
                              (user_id, "Unknown", 1))
     local_conn.commit()
@@ -196,7 +202,7 @@ async def get_stats():
     stats = [{"username": row["username"], "clicks": row["clicks"]} for row in rows]
     return stats
 
-# Бот принимает клики от Mini App (также обновляет локальную БД)
+# Бот принимает клики от Mini App (обновляет локальную БД)
 @router.message(lambda message: message.web_app_data is not None)
 async def handle_webapp_data(message: types.Message):
     data = json.loads(message.web_app_data.data)
@@ -209,19 +215,15 @@ async def handle_webapp_data(message: types.Message):
     local_conn.commit()
     await message.answer(f"Ваши клики: {data['clicks']}")
 
-# Функция запуска FastAPI + бота и фонового задания синхронизации
+# Функция запуска FastAPI, бота и фоновой задачи синхронизации
 async def main():
     loop = asyncio.get_event_loop()
-
-    # Запускаем фоновую задачу синхронизации каждые 10 минут
+    # Запускаем фоновую задачу синхронизации
     sync_task = loop.create_task(sync_databases())
-    
     # Запускаем бота
     bot_task = loop.create_task(dp.start_polling(bot))
-    
     # Запускаем FastAPI сервер
     server_task = loop.create_task(uvicorn.run(app, host="0.0.0.0", port=8000))
-    
     await asyncio.gather(sync_task, bot_task, server_task)
 
 if __name__ == "__main__":
