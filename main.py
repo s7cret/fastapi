@@ -35,53 +35,78 @@ conn.execute("""
 """)
 conn.commit()
 
-# 🔹 Проверка подписи Telegram WebApp
-def check_telegram_auth(data):
-    print("🔹 [Auth] Полученные данные:", data)  # Логируем запрос
-
-    # Если поле "user" является словарём, преобразуем его в JSON-строку с нужными параметрами
-    if "user" in data and isinstance(data["user"], dict):
-        # Используем минимальные разделители и сортировку ключей
-        data["user"] = json.dumps(data["user"], separators=(",", ":"), sort_keys=True)
-
-    secret_key = hashlib.sha256(BOT_TOKEN.encode()).digest()
-    received_hash = data.pop("hash", None)
-
-    # Формируем строку, сортируя ключи
-    check_string = "\n".join(f"{k}={v}" for k, v in sorted(data.items()))
-    calculated_hash = hmac.new(secret_key, check_string.encode(), hashlib.sha256).hexdigest()
-
-    print("🔹 [Auth] Received Hash:", received_hash)
-    print("🔹 [Auth] Calculated Hash:", calculated_hash)
-
-    if received_hash != calculated_hash:
-        print("❌ [Auth] Подпись не совпадает!")
+# Функция проверки подписи согласно рекомендациям Telegram:
+def check_webapp_signature(token: str, init_data: str) -> bool:
+    """
+    Проверяет подпись initData, переданного от Telegram WebApp.
+    
+    Алгоритм:
+      1. Разбираем init_data как query string.
+      2. Удаляем параметр "hash".
+      3. Формируем строку вида: "key1=value1\nkey2=value2\n..." (ключи сортируются лексикографически).
+      4. Вычисляем секретный ключ как HMAC с ключом "WebAppData" и токеном бота.
+      5. Вычисляем контрольный хэш.
+      6. Сравниваем вычисленный хэш с полученным.
+    """
+    try:
+        parsed_data = dict(parse_qsl(init_data))
+    except ValueError:
+        # init_data не является корректной строкой запроса
+        return False
+    if "hash" not in parsed_data:
         return False
 
-    print("✅ [Auth] Подпись Telegram верна!")
-    return True
+    received_hash = parsed_data.pop("hash")
+    data_check_string = "\n".join(
+        f"{k}={v}" for k, v in sorted(parsed_data.items(), key=itemgetter(0))
+    )
+    # Вычисляем секретный ключ с использованием "WebAppData" (как указано в документации)
+    secret_key = hmac.new(key=b"WebAppData", msg=token.encode(), digestmod=hashlib.sha256)
+    calculated_hash = hmac.new(
+        key=secret_key.digest(),
+        msg=data_check_string.encode(),
+        digestmod=hashlib.sha256
+    ).hexdigest()
+    return calculated_hash == received_hash
 
-# 🔹 Авторизация (получаем user_id)
+# Endpoint авторизации
 @app.post("/api/auth")
 async def auth(data: dict):
-    print("🔹 [API] Авторизация пользователя:", data)  # Логируем авторизацию
-
-    if not check_telegram_auth(data):
+    """
+    Ожидает, что клиент пришлёт JSON с полем "initData",
+    содержащим исходную строку данных от Telegram.
+    """
+    init_data = data.get("initData")
+    print("🔹 [API] initData:", init_data)
+    if not init_data:
+        raise HTTPException(status_code=400, detail="Missing initData")
+    
+    if not check_webapp_signature(BOT_TOKEN, init_data):
         raise HTTPException(status_code=403, detail="Invalid auth")
-
-    user_id = int(data["id"])
-    username = data.get("username", "Unknown")
-
+    
+    # Если подпись верна, разбираем initData в словарь
+    parsed_data = dict(parse_qsl(init_data))
+    # Извлекаем поле "user" — оно передаётся как URL-кодированная JSON-строка
+    user_json = parsed_data.get("user")
+    if not user_json:
+        raise HTTPException(status_code=400, detail="Missing user data")
+    try:
+        user_obj = json.loads(user_json)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail="Invalid user data format")
+    
+    user_id = int(user_obj["id"])
+    username = user_obj.get("username", "Unknown")
+    
     # Проверяем, есть ли пользователь в базе
     result = conn.execute("SELECT clicks FROM clicks WHERE user_id = ?", (user_id,))
     user = result.fetchone()
-
     user_clicks = user[0] if user else 0
-
+    
     if not user:
         conn.execute("INSERT INTO clicks (user_id, username, clicks) VALUES (?, ?, ?)", (user_id, username, 0))
         conn.commit()
-
+    
     print(f"✅ [API] Пользователь {user_id} ({username}), кликов: {user_clicks}")
     return {"user_id": user_id, "clicks": user_clicks}
 
