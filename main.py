@@ -1,7 +1,10 @@
-import os  # Импортируем модуль для работы с окружением
+import os
 import hmac
 import hashlib
 import json
+from urllib.parse import parse_qsl
+from operator import itemgetter
+
 import libsql_experimental as libsql
 from fastapi import FastAPI, HTTPException
 from aiogram import Bot, Dispatcher, Router, types
